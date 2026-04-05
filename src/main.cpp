@@ -1,27 +1,86 @@
-#include <TFT_eSPI.h>
-#include <SPI.h>
+#include <Arduino.h>
 
-TFT_eSPI tft = TFT_eSPI();
+#include "drive/drive.h"
+#include "ears/ears.h"
+#include "face/face.h"
+#include "bluetooth/bluetooth.h"
+#include "emotions/emotions.h"
 
-// Colors
-const uint16_t C_GREEN = 0x07E0;  // Bright green
-const uint16_t C_BLACK = TFT_BLACK;
-const uint16_t C_YELLOW = 0xFFE0; // Bright yellow
+// ─────────────────────────────────────────────────────────────────────────────
+// BLE command handler
+// Called from Bluetooth::update() on the main loop whenever a complete
+// command string arrives from the remote control app.
+//
+// Command reference (see bluetooth.h for full protocol docs):
+//   "FWD" / "BCK" / "LFT" / "RGT" / "STP"
+//   "SPD:<0-255>"
+//   "EMO:<name>"
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ── Setup & Loop ─────────────────────────────────────────
+static void onCommand(const char* cmd) {
+    Serial.printf("[CMD] %s\n", cmd);
 
-void setup() {
+    if      (strcmp(cmd, "FWD") == 0) { Drive::forward();   }
+    else if (strcmp(cmd, "BCK") == 0) { Drive::backward();  }
+    else if (strcmp(cmd, "LFT") == 0) { Drive::turnLeft();  }
+    else if (strcmp(cmd, "RGT") == 0) { Drive::turnRight(); }
+    else if (strcmp(cmd, "STP") == 0) { Drive::stop();      }
 
-    Serial.begin(115200);
-    tft.init();
-    tft.setRotation(2);  // landscape 320×240  (try 3 if face appears upside-down)
-    tft.setAddrWindow(0, 0, 320, 240);  // hardcode your actual dimensions
-    tft.pushColor(C_BLACK, 320 * 240);  // flood every pixel
+    else if (strncmp(cmd, "SPD:", 4) == 0) {
+        uint8_t spd = (uint8_t)atoi(cmd + 4);
+        Drive::setSpeed(spd);
+    }
 
-    tft.drawRect(0, 50, 50, 50, C_YELLOW);
+    else if (strncmp(cmd, "EMO:", 4) == 0) {
+        Face::Emotion e = EmotionManager::fromString(cmd + 4);
+        EmotionManager::set(e);
+    }
 
+    // Echo acknowledgement back to app.
+    char ack[72];
+    snprintf(ack, sizeof(ack), "OK:%s", cmd);
+    Bluetooth::send(ack);
 }
 
-void loop() {
+// ─────────────────────────────────────────────────────────────────────────────
+// Setup
+// ─────────────────────────────────────────────────────────────────────────────
 
+void setup() {
+    Serial.begin(115200);
+    Serial.println("[BOOT] Desk Robot starting...");
+
+    Face::init();
+    Face::showStatus("Booting...");
+
+    Ears::init();
+    Drive::init();
+    EmotionManager::init();
+
+    Bluetooth::init(onCommand);
+
+    Face::showStatus("Ready — waiting for BT");
+    Serial.println("[BOOT] Ready.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+void loop() {
+    // Process any incoming BLE commands.
+    Bluetooth::update();
+
+    // Animate the face (blinking, etc.).
+    Face::update();
+
+    // Update the status bar whenever BT connection state changes.
+    static bool _wasConnected = false;
+    bool nowConnected = Bluetooth::isConnected();
+    if (nowConnected != _wasConnected) {
+        _wasConnected = nowConnected;
+        Face::showStatus(nowConnected ? "BT Connected" : "Waiting for BT");
+    }
+
+    delay(10);  // Yield — keeps BLE stack happy.
 }
